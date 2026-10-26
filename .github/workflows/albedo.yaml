@@ -1,0 +1,52 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: albedo
+
+on:
+  pull_request:
+    paths: ["albedo/**", ".github/workflows/albedo.yaml"]
+  push:
+    branches: [main]
+    paths: ["albedo/**", ".github/workflows/albedo.yaml"]
+
+concurrency:
+  group: albedo-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: check formatting
+        working-directory: albedo
+        run: nix fmt -- --check flake.nix
+      - name: build image
+        run: nix build ./albedo#image --no-update-lock-file --print-build-logs
+      - name: load and test image
+        run: |
+          docker load < result
+          image=$(nix eval --raw ./albedo#image.imageName):$(nix eval --raw ./albedo#image.imageTag)
+          bash albedo/smoke.sh "$image"
+      - name: publish oci image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          authfile="$RUNNER_TEMP/registry-auth.json"
+          trap 'rm -f "$authfile"' EXIT
+          printf '%s' "$REGISTRY_PASSWORD" | nix run ./albedo#skopeo -- login \
+            --authfile "$authfile" --username "$REGISTRY_USER" --password-stdin ghcr.io
+          image=$(nix eval --raw ./albedo#image.imageName):$(nix eval --raw ./albedo#image.imageTag)
+          # trust the unsigned local nix archive; registry tls verification stays enabled.
+          nix run ./albedo#skopeo -- --insecure-policy copy --format oci --authfile "$authfile" \
+            "docker-archive:$(readlink -f result)" "docker://$image"
