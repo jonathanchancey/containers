@@ -34,7 +34,7 @@
         default = self.packages.${system}.image;
         image = pkgs.dockerTools.buildLayeredImage {
           name = "ghcr.io/jonathanchancey/albedo";
-          tag = "a65e5babc2b9-1";
+          tag = "${albedo.shortRev}-1";
           contents = [
             package
             healthcheck
@@ -71,6 +71,8 @@
             ];
             Labels = {
               "org.opencontainers.image.source" = "https://github.com/jonathanchancey/containers";
+              "org.opencontainers.image.revision" = albedo.rev;
+              "io.github.jonathanchancey.packaging-revision" = self.rev or self.dirtyRev;
               "org.opencontainers.image.description" = "albedo with kubernetes inspection tools";
               "org.opencontainers.image.licenses" = "MPL-2.0";
             };

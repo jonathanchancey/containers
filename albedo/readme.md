@@ -12,10 +12,10 @@ image=$(nix eval --raw ./albedo#image.imageName):$(nix eval --raw ./albedo#image
 bash albedo/smoke.sh "$image"
 ```
 
-the workflow builds and tests pull requests. merges to main publish the tested
-archive to ghcr as an oci image using skopeo. make the package public after its
-first publication if consumers pull without credentials. images contain no
-provider credentials or deployment-specific personality.
+the workflow builds and tests pull requests using the committed lockfile.
+release builds publish tested oci images to ghcr using skopeo. make the package
+public after its first publication if consumers pull without credentials.
+images contain no provider credentials or deployment-specific personality.
 
 ## runtime contract
 
@@ -42,8 +42,27 @@ sign-in keys. never share one home between running containers.
 
 ## updates
 
-change the upstream revision in `flake.nix`, refresh `albedo/flake.lock` with
-`nix flake lock ./albedo`, and increment the image tag. also increment the tag for
-packaging-only changes; do not reuse a published tag for different contents.
-run the smoke test before updating consumers. the lockfile is independent of
-deployment repositories, and albedo is pre-alpha: back up homes before upgrades.
+the [workflow](../.github/workflows/albedo.yaml) checks upstream `main` daily at
+08:23 utc and after packaging merges. unchanged upstream and packaging inputs
+skip publication. github may delay scheduled runs.
+
+for an immediate release, open **actions → albedo → run workflow** on `main`.
+leave `revision` empty for upstream `main`, or enter a full upstream commit sha.
+enable `force` to rebuild unchanged inputs. only successful builds and smoke
+tests publish images; a failed run leaves existing releases untouched.
+
+images use `YYYYMMDD.run-number.run-attempt` tags. each github prerelease includes
+`release.json` with the image digest and upstream/packaging commits, plus the
+exact `flake.lock`. reruns get new tags, never replacing previous images.
+if publication succeeds but release creation fails, rerun the workflow to
+publish a new tag with its release assets.
+
+to reproduce a release, check out its `packaging_revision` from `release.json`,
+replace `albedo/flake.lock` with the release asset, and run the build commands
+above. the release workflow overrides the upstream input without changing the
+committed pin. to refresh the pr-build baseline, change the revision in
+`flake.nix` and run `nix flake lock ./albedo`.
+
+consumer repositories should track the date tags with digest pins and review
+deployment updates separately. albedo is pre-alpha: back up persistent homes
+before upgrades; reverting an image does not undo database migrations.

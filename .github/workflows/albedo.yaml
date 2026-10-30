@@ -8,6 +8,18 @@ on:
   push:
     branches: [main]
     paths: ["albedo/**", ".github/workflows/albedo.yaml"]
+  schedule:
+    - cron: "23 8 * * *"
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: upstream commit (full sha; empty uses main)
+        type: string
+        default: ""
+      force:
+        description: release even if upstream and packaging are unchanged
+        type: boolean
+        default: false
 
 concurrency:
   group: albedo-${{ github.ref }}
@@ -18,35 +30,41 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: test release decisions and failure handling
+        run: python3 albedo/test-release.py
       - name: check formatting
         working-directory: albedo
         run: nix fmt -- --check flake.nix
+      - name: prepare release
+        id: release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REVISION: ${{ inputs.revision }}
+          FORCE_RELEASE: ${{ inputs.force || false }}
+        run: bash albedo/prepare-release.sh
       - name: build image
+        if: github.event_name == 'pull_request' || steps.release.outputs.publish == 'true'
         run: nix build ./albedo#image --no-update-lock-file --print-build-logs
       - name: load and test image
+        if: github.event_name == 'pull_request' || steps.release.outputs.publish == 'true'
         run: |
           docker load < result
           image=$(nix eval --raw ./albedo#image.imageName):$(nix eval --raw ./albedo#image.imageTag)
           bash albedo/smoke.sh "$image"
-      - name: publish oci image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: publish tested image and release
+        if: steps.release.outputs.publish == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          authfile="$RUNNER_TEMP/registry-auth.json"
-          trap 'rm -f "$authfile"' EXIT
-          printf '%s' "$REGISTRY_PASSWORD" | nix run ./albedo#skopeo -- login \
-            --authfile "$authfile" --username "$REGISTRY_USER" --password-stdin ghcr.io
-          image=$(nix eval --raw ./albedo#image.imageName):$(nix eval --raw ./albedo#image.imageTag)
-          # trust the unsigned local nix archive; registry tls verification stays enabled.
-          nix run ./albedo#skopeo -- --insecure-policy copy --format oci --authfile "$authfile" \
-            "docker-archive:$(readlink -f result)" "docker://$image"
+        run: bash albedo/publish-release.sh
